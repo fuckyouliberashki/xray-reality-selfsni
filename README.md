@@ -38,14 +38,3 @@ bash <(curl -sSL https://raw.githubusercontent.com/fuckyouliberashki/xray-realit
 Скрипт автоматически перезапускает Nginx и Xray после установки.
 Для стабильной работы рекомендуется использовать официальный Xray install script.
 
-
-
----
-
-💡 **Совет:** на GitHub Pages можно добавить HTML-блок с кнопкой Copy рядом с командой:
-
-```html
-<pre>
-<code id="install-cmd">bash &lt;(curl -sSL https://raw.githubusercontent.com/fuckyouliberashki/xray-reality-selfsni/refs/heads/main/install.sh)</code>
-<button onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').innerText)">Copy</button>
-</pre>
