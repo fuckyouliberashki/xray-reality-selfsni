@@ -7,50 +7,16 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}=== Установка VLESS + WS + TLS (nginx + certbot) ===${NC}"
-echo -e "\n${YELLOW}Принудительно освобождаем порты 80, 443, 8080, 8443...${NC}"
 
-PORTS="80 443 8080 8443"
-
-for port in $PORTS; do
-    if sudo ss -ltn | grep -q ":$port "; then
-        echo -e "  Порт ${YELLOW}$port${NC} занят → убиваем процессы..."
-
-        # Вариант 1 — fuser (самый удобный и быстрый)
-        sudo fuser -k -n tcp $port 2>/dev/null || true
-
-        # Вариант 2 — если fuser не справился, добиваем через lsof + kill -9
-        PIDS=$(sudo lsof -t -iTCP:$port -sTCP:LISTEN 2>/dev/null)
-        if [ -n "$PIDS" ]; then
-            echo "  fuser не справился → добиваем через kill -9"
-            sudo kill -9 $PIDS 2>/dev/null || true
-        fi
-
-       
-        sleep 1.5
-
- 
-        if sudo ss -ltn | grep -q ":$port "; then
-            echo -e "  ${RED}Внимание! Порт $port всё ещё занят после попытки убийства${NC}"
-        else
-            echo -e "  ${GREEN}Порт $port освобождён${NC}"
-        fi
-    else
-        echo -e "  Порт ${GREEN}$port${NC} свободен"
-    fi
+echo -e "\n${YELLOW}Освобождаем порты 80 и 443...${NC}"
+for port in 80 443; do
+    sudo fuser -k -n tcp $port 2>/dev/null || true
 done
+
 echo -e "\n${GREEN}Установка пакетов...${NC}"
 apt update -qq
 DEBIAN_FRONTEND=noninteractive apt install -y \
-    curl wget jq openssl certbot nginx qrencode ca-certificates
-
-if ! sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
-    echo "net.core.default_qdisc=fq" | sudo tee -a /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" | sudo tee -a /etc/sysctl.conf
-    sudo sysctl -p
-    echo -e "${GREEN}BBR включён${NC}"
-else
-    echo "BBR уже активен"
-fi
+    curl wget jq openssl certbot nginx qrencode ca-certificates lsof
 
 echo -e "\n${GREEN}Установка Xray...${NC}"
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
@@ -62,53 +28,56 @@ touch /usr/local/etc/xray/.keys
 uuid=$(xray uuid)
 echo "uuid: $uuid" >> /usr/local/etc/xray/.keys
 
+# ===== ДОМЕН =====
 while true; do
-    read -p "Введите ваш домен (пример: vpn.example.com): " domain
+    read -p "Введите домен (пример: vpn.example.com): " domain
     if [[ -z "$domain" ]]; then
         echo -e "${RED}Домен обязателен!${NC}"
-    else
-        break
+        continue
     fi
+
+    if [[ ! "$domain" =~ ^[A-Za-z0-9.-]+$ ]]; then
+        echo -e "${RED}Некорректный формат домена!${NC}"
+        continue
+    fi
+    break
 done
 
 echo "domain: $domain" >> /usr/local/etc/xray/.keys
 
-ws_path="/$(openssl rand -hex 5)-$(openssl rand -hex 3)"
+# ===== ПРОВЕРКА DNS =====
+SERVER_IP=$(curl -s ifconfig.me)
+DOMAIN_IP=$(dig +short $domain | tail -n1)
 
+if [[ "$SERVER_IP" != "$DOMAIN_IP" ]]; then
+    echo -e "${RED}DNS не указывает на этот сервер!${NC}"
+    echo "IP сервера : $SERVER_IP"
+    echo "IP домена  : $DOMAIN_IP"
+    exit 1
+fi
+
+ws_path="/$(openssl rand -hex 5)"
 echo "ws_path: $ws_path" >> /usr/local/etc/xray/.keys
 
 echo -e "\n${GREEN}Получаем сертификат Let's Encrypt...${NC}"
 
 sudo systemctl stop nginx 2>/dev/null || true
 
-if ! sudo certbot certonly \
+certbot certonly \
     --standalone \
     --non-interactive \
     --agree-tos \
-    --email "admin@${domain}" \
-    -d "${domain}" \
-    --preferred-challenges http; then
-
-    echo -e "${RED}Не удалось получить сертификат!${NC}"
-    echo "Возможные причины:"
-    echo "  • DNS A-запись домена не указывает на этот сервер"
-    echo "  • Порт 80 закрыт в firewall / провайдером"
-    echo "  • Rate-limit Let's Encrypt (подождите 1 час)"
-    echo ""
-    echo "Диагностика:"
-    echo "  sudo certbot certonly --standalone -d $domain --dry-run"
-    exit 1
-fi
+    --email "admin@$domain" \
+    -d "$domain"
 
 if [[ ! -f "/etc/letsencrypt/live/$domain/fullchain.pem" ]]; then
-    echo -e "${RED}Сертификаты не найдены после certbot!${NC}"
+    echo -e "${RED}Сертификат не получен!${NC}"
     exit 1
 fi
 
 echo -e "${GREEN}Сертификат получен${NC}"
 
-echo -e "\n${GREEN}Настраиваем nginx...${NC}"
-
+# ===== NGINX =====
 cat > /etc/nginx/sites-available/xray-vless <<EOF
 server {
     listen 80;
@@ -124,7 +93,6 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
 
     location / {
         return 404;
@@ -136,8 +104,6 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
     }
 }
 EOF
@@ -145,20 +111,16 @@ EOF
 ln -sf /etc/nginx/sites-available/xray-vless /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
-nginx -t && sudo systemctl restart nginx
+nginx -t
+systemctl restart nginx
 
+# ===== XRAY CONFIG =====
 cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": {
     "loglevel": "warning",
-    "access": "access.log"
-   
-  },
-  "dns": {
-    "servers": [
-      "https+local://1.1.1.1/dns-query",
-      "localhost"
-    ]
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log"
   },
   "inbounds": [
     {
@@ -168,9 +130,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "settings": {
         "clients": [
           {
-            "id": "$uuid",
-            "email": "main",
-            "level": 0
+            "id": "$uuid"
           }
         ],
         "decryption": "none"
@@ -181,57 +141,28 @@ cat > /usr/local/etc/xray/config.json <<EOF
         "wsSettings": {
           "path": "$ws_path"
         }
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls"]
       }
     }
   ],
   "outbounds": [
     {
-      "protocol": "freedom",
-      "tag": "direct"
-    },
-    {
-      "protocol": "blackhole",
-      "tag": "block"
+      "protocol": "freedom"
     }
   ]
 }
 EOF
 
-cat > /usr/local/bin/vless-main <<'EOF'
-#!/bin/bash
-uuid=$(grep '^uuid:' /usr/local/etc/xray/.keys | cut -d' ' -f2)
-domain=$(grep '^domain:' /usr/local/etc/xray/.keys | cut -d' ' -f2)
-path=$(grep '^ws_path:' /usr/local/etc/xray/.keys | cut -d' ' -f2)
+mkdir -p /var/log/xray
 
-link="vless://${uuid}@${domain}:443?type=ws&path=${path}&security=tls&host=${domain}&sni=${domain}#main"
-echo -e "\nОсновная ссылка:"
-echo "$link"
-echo -e "\nQR-код:"
-echo "$link" | qrencode -t ansiutf8
-EOF
-chmod +x /usr/local/bin/vless-main
-
+# Проверка JSON
+jq . /usr/local/etc/xray/config.json >/dev/null
 
 systemctl restart xray
-systemctl restart nginx
 
 echo -e "\n${GREEN}Установка завершена!${NC}"
-echo "Домен          : $domain"
-echo "Путь WebSocket : $ws_path"
-echo ""
-/usr/local/bin/vless-main
+echo "Домен : $domain"
+echo "UUID  : $uuid"
+echo "Path  : $ws_path"
 
-cat <<'EOF' > ~/vless-help
-Команды:
-  vless-main       → показать ссылку и QR основного пользователя
-  xray version     → версия Xray
-  systemctl status xray
-  systemctl status nginx
-  sudo certbot renew --dry-run   → проверить автопродление сертификата
-EOF
-
-cat ~/vless-help
+echo -e "\nСсылка:"
+echo "vless://${uuid}@${domain}:443?type=ws&path=${ws_path}&security=tls&sni=${domain}#main"
