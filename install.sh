@@ -1,14 +1,4 @@
 #!/bin/bash
-# =============================================================================
-# Установка VLESS + WebSocket + TLS (nginx + Let's Encrypt)
-# С принудительным освобождением портов 80, 443, 8080, 8443 в начале
-# =============================================================================
-# Требования:
-#   - Ubuntu/Debian
-#   - Домен уже направлен на IP сервера (A-запись)
-#   - Порты 80 и 443 доступны извне
-# =============================================================================
-
 set -e
 
 RED='\033[0;31m'
@@ -17,10 +7,6 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}=== Установка VLESS + WS + TLS (nginx + certbot) ===${NC}"
-
-# ────────────────────────────────────────────────
-# 0. Агрессивное освобождение портов 80,443,8080,8443
-# ────────────────────────────────────────────────
 echo -e "\n${YELLOW}Принудительно освобождаем порты 80, 443, 8080, 8443...${NC}"
 
 PORTS="80 443 8080 8443"
@@ -39,10 +25,10 @@ for port in $PORTS; do
             sudo kill -9 $PIDS 2>/dev/null || true
         fi
 
-        # Даём 1–2 секунды на завершение
+       
         sleep 1.5
 
-        # Проверка
+ 
         if sudo ss -ltn | grep -q ":$port "; then
             echo -e "  ${RED}Внимание! Порт $port всё ещё занят после попытки убийства${NC}"
         else
@@ -52,18 +38,11 @@ for port in $PORTS; do
         echo -e "  Порт ${GREEN}$port${NC} свободен"
     fi
 done
-
-# ────────────────────────────────────────────────
-# 1. Установка необходимых пакетов
-# ────────────────────────────────────────────────
 echo -e "\n${GREEN}Установка пакетов...${NC}"
 apt update -qq
 DEBIAN_FRONTEND=noninteractive apt install -y \
     curl wget jq openssl certbot nginx qrencode ca-certificates
 
-# ────────────────────────────────────────────────
-# 2. BBR (если не включён)
-# ────────────────────────────────────────────────
 if ! sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
     echo "net.core.default_qdisc=fq" | sudo tee -a /etc/sysctl.conf
     echo "net.ipv4.tcp_congestion_control=bbr" | sudo tee -a /etc/sysctl.conf
@@ -73,15 +52,9 @@ else
     echo "BBR уже активен"
 fi
 
-# ────────────────────────────────────────────────
-# 3. Установка Xray
-# ────────────────────────────────────────────────
 echo -e "\n${GREEN}Установка Xray...${NC}"
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-# ────────────────────────────────────────────────
-# 4. Генерация ключей и запрос домена
-# ────────────────────────────────────────────────
 mkdir -p /usr/local/etc/xray
 rm -f /usr/local/etc/xray/.keys
 touch /usr/local/etc/xray/.keys
@@ -100,14 +73,10 @@ done
 
 echo "domain: $domain" >> /usr/local/etc/xray/.keys
 
-# Случайный путь для WebSocket (можно поменять)
 ws_path="/$(openssl rand -hex 5)-$(openssl rand -hex 3)"
 
 echo "ws_path: $ws_path" >> /usr/local/etc/xray/.keys
 
-# ────────────────────────────────────────────────
-# 5. Получение сертификата Let's Encrypt
-# ────────────────────────────────────────────────
 echo -e "\n${GREEN}Получаем сертификат Let's Encrypt...${NC}"
 
 sudo systemctl stop nginx 2>/dev/null || true
@@ -138,9 +107,6 @@ fi
 
 echo -e "${GREEN}Сертификат получен${NC}"
 
-# ────────────────────────────────────────────────
-# 6. Конфигурация nginx
-# ────────────────────────────────────────────────
 echo -e "\n${GREEN}Настраиваем nginx...${NC}"
 
 cat > /etc/nginx/sites-available/xray-vless <<EOF
@@ -181,13 +147,12 @@ rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
 nginx -t && sudo systemctl restart nginx
 
-# ────────────────────────────────────────────────
-# 7. Конфиг Xray (VLESS + WS)
-# ────────────────────────────────────────────────
 cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": {
-    "loglevel": "warning"
+    "loglevel": "warning",
+    "access": "access.log"
+   
   },
   "dns": {
     "servers": [
@@ -236,10 +201,6 @@ cat > /usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
-# ────────────────────────────────────────────────
-# 8. Полезные скрипты
-# ────────────────────────────────────────────────
-
 cat > /usr/local/bin/vless-main <<'EOF'
 #!/bin/bash
 uuid=$(grep '^uuid:' /usr/local/etc/xray/.keys | cut -d' ' -f2)
@@ -254,7 +215,7 @@ echo "$link" | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/vless-main
 
-# Перезапуск
+
 systemctl restart xray
 systemctl restart nginx
 
