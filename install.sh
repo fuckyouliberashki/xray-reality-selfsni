@@ -16,7 +16,7 @@ done
 echo -e "\n${GREEN}Установка пакетов...${NC}"
 apt update -qq
 DEBIAN_FRONTEND=noninteractive apt install -y \
-    curl wget jq openssl certbot nginx qrencode ca-certificates lsof
+    curl wget jq openssl certbot nginx qrencode dnsutils ca-certificates lsof
 
 echo -e "\n${GREEN}Установка Xray...${NC}"
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
